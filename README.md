@@ -1,24 +1,14 @@
-# LangChain RAG — Mini Project
+# RAG Question Answering (Minimal)
 
-This repository refactors an existing Retrieval-Augmented Generation
-(RAG) project into a clean, modular implementation built on
-LangChain and Streamlit.
+A clean, minimal RAG app with exactly three features:
 
-**Features**
+- Upload PDF → extract, chunk, embed → store in Chroma (persistent)
+- Ask Question → retrieve top-k → LLM answer with clear citations
+- History → view upload and query history with timestamps
 
-- LangChain-based loaders, text-splitting, embeddings, and FAISS vector
-  store
-- RetrievalQA chain using OpenAI Chat models (optional)
-- Streamlit UI with tabs for ingestion, chat, URL/YouTube ingestion,
-  resume analysis, job recommendations, and file management
-- Logging, type hints, and docstrings throughout the backend
-- Simple persistence for FAISS vectorstore
+## Quick Start
 
-**Quick start**
-
-1. Create a virtual environment and activate it.
-
-On Windows (PowerShell):
+1) Create and activate a virtual environment (Windows PowerShell):
 
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1

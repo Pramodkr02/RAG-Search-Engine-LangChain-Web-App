@@ -1,183 +1,200 @@
-"""Streamlit app using LangChain-based RAG pipeline.
+"""RAG Question Answering (Streamlit)
 
-This app uses the `backend` package which exposes LangChain wrappers for
-loading, chunking, embedding, and retrieval. It provides multiple tabs
-for ingestion, chat, URL/YouTube ingestion, resume analysis, and job
-recommendations.
+Features (exactly as requested):
+- Left sidebar Knowledge Base with three tabs: PDF, URL (incl. YouTube/website), Text
+- Center: big question box with Get Answer
+- Top-right: New + button to reset session
+- History section: upload and query history with clear buttons
+
+Back end uses FAISS vector store via LangChain. API key is read from .env (OPENAI_API_KEY) or sidebar.
 """
-
 import os
-from pathlib import Path
 import json
+from datetime import datetime
 
 import streamlit as st
+from dotenv import load_dotenv
 
-from backend import loaders, rag, resume_analyzer, job_recommender
-from backend.config import UPLOAD_DIR, DEFAULT_TOP_K
-from backend.utils import ensure_dir
+from backend import loaders, rag
+from backend.config import METADATA_PATH
 from backend.logger import root_logger
-from backend.memory import get_memory
+
+# ---------- Bootstrap ----------
+load_dotenv(override=True)
+if os.getenv("OPENAI_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")  # ensure for langchain-openai
+
+st.set_page_config(page_title="RAG Question Answering", layout="wide")
+st.markdown(
+    """
+    <style>
+      .block-container{padding-top:1rem;}
+      .stTextArea textarea{font-size:1.05rem;}
+      .hint{color:#c8c8c8;font-size:0.92rem;}
+      .ok{background:#16321f;color:#b9f5d0;padding:10px 12px;border-radius:6px;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ---------- Helpers (history) ----------
+HISTORY_FILE = METADATA_PATH
+
+def _read_history():
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"uploads": [], "queries": []}
 
 
-ensure_dir(UPLOAD_DIR)
+def _write_history(data):
+    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-st.set_page_config(page_title="LangChain RAG App", layout="wide")
-logger = root_logger
 
-# Sidebar
-st.sidebar.title("Settings")
-st.sidebar.markdown("Provide `OPENAI_API_KEY` (optional). If provided, the app will use OpenAI for LLMs.")
-OPENAI_KEY = st.sidebar.text_input("OpenAI API Key", type="password")
-if OPENAI_KEY:
-    os.environ["OPENAI_API_KEY"] = OPENAI_KEY
+def _add_upload_record(kind: str, title: str):
+    h = _read_history()
+    h["uploads"].insert(0, {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "type": kind, "title": title})
+    _write_history(h)
 
-top_k = st.sidebar.slider("Retrieval Top-K", min_value=1, max_value=10, value=DEFAULT_TOP_K)
-st.sidebar.markdown("---")
 
-st.title("📚 LangChain RAG — Streamlit")
-st.markdown("Upload sources, ingest text, ask questions (RAG), analyze resumes, and get job recommendations.")
+def _add_query_record(question: str):
+    h = _read_history()
+    h["queries"].insert(0, {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "question": question})
+    _write_history(h)
 
-tabs = st.tabs(["Ingest", "Chat (RAG)", "URL & YouTube", "Resume Analyzer", "Job Recommender", "Manage Files"]) 
 
-# Ingest tab
-with tabs[0]:
-    st.header("Ingest: PDF / Text")
-    st.write("Upload PDFs or paste text to ingest into the FAISS vector store.")
+# ---------- Sidebar (Knowledge Base) ----------
+st.sidebar.header("Knowledge Base")
+kb_tab = st.sidebar.tabs(["PDF", "URL", "Text"])
 
-    uploaded_files = st.file_uploader("Upload PDF file(s)", type=["pdf"], accept_multiple_files=True)
-    if uploaded_files:
-        for f in uploaded_files:
-            raw = f.read()
+# PDF tab
+with kb_tab[0]:
+    st.markdown("#### Upload PDF")
+    pdf = st.file_uploader("Drag and drop file here", type=["pdf"], label_visibility="collapsed")
+    if pdf is not None:
+        if st.button("Ingest PDF", use_container_width=True):
             try:
-                doc = loaders.load_pdf_bytes(raw, source=f.name)
-                n = rag.ingest_text(title=f.name, text=doc.page_content, source="pdf", openai_api_key=OPENAI_KEY or os.environ.get("OPENAI_API_KEY"))
-                Path(UPLOAD_DIR).joinpath(f.name).write_bytes(raw)
-                st.success(f"Ingested {n} chunks from {f.name}")
-            except Exception as exc:
-                st.error(f"Failed to ingest {f.name}: {exc}")
+                doc = loaders.load_pdf_bytes(pdf.read(), source=pdf.name)
+                chunks = rag.ingest_text(title=pdf.name, text=doc.page_content, source="pdf", openai_api_key=os.getenv("OPENAI_API_KEY"))
+                st.markdown('<div class="ok">PDF ingested successfully!</div>', unsafe_allow_html=True)
+                _add_upload_record("pdf", pdf.name)
+            except Exception as e:
+                st.error(f"Failed to ingest PDF: {e}")
+    st.caption("Limit 200MB per file • PDF")
 
-    st.write("---")
-    st.subheader("Paste text to ingest")
-    txt_title = st.text_input("Title for text", value="pasted_text")
-    txt_area = st.text_area("Paste text here", height=200)
-    if st.button("Ingest pasted text"):
-        if not txt_area.strip():
-            st.warning("Paste text to ingest.")
-        else:
-            n = rag.ingest_text(title=txt_title or "pasted_text", text=txt_area, source="text", openai_api_key=OPENAI_KEY or os.environ.get("OPENAI_API_KEY"))
-            st.success(f"Ingested {n} chunks from pasted text.")
-
-# Chat (RAG)
-with tabs[1]:
-    st.header("Ask questions (RAG)")
-    memory = get_memory()
-    query = st.text_input("Type your question here")
-    if st.button("Retrieve & Answer"):
-        if not query.strip():
-            st.warning("Enter a question.")
-        else:
-            try:
-                resp = rag.answer_query(query, openai_api_key=OPENAI_KEY or os.environ.get("OPENAI_API_KEY"), top_k=top_k)
-                st.subheader("Answer")
-                st.write(resp.get("answer"))
-                st.subheader("Citations")
-                for s in resp.get("sources", []):
-                    st.markdown(f"- `{s}`")
-            except Exception as exc:
-                logger.exception("Chat failed: %s", exc)
-                st.error(f"Retrieval or LLM failed: {exc}")
-
-# URL & YouTube
-with tabs[2]:
-    st.header("URL scraping & YouTube transcript ingestion")
-    url = st.text_input("Paste webpage URL (http/https)")
-    if st.button("Fetch & Ingest URL"):
+# URL tab (website or YouTube)
+with kb_tab[1]:
+    st.markdown("#### Add from URL (website or YouTube)")
+    url = st.text_input("Enter URL", placeholder="https://example.com/article or YouTube link")
+    if st.button("Ingest URL", use_container_width=True):
         if not url.strip():
-            st.warning("Enter a URL.")
+            st.warning("Enter a URL to ingest.")
         else:
             try:
-                doc = loaders.load_url_to_document(url.strip())
-                n = rag.ingest_text(title=url.strip(), text=doc.page_content, source="url", openai_api_key=OPENAI_KEY or os.environ.get("OPENAI_API_KEY"))
-                st.success(f"Ingested {n} chunks from URL.")
-                st.write(doc.page_content[:1500] + ("..." if len(doc.page_content) > 1500 else ""))
-            except Exception as exc:
-                st.error(f"Failed to fetch/ingest URL: {exc}")
+                if "youtube.com" in url or "youtu.be" in url:
+                    doc = loaders.load_youtube_transcript(url)
+                    title = "YouTube"
+                    kind = "youtube"
+                else:
+                    doc = loaders.load_url_to_document(url)
+                    title = url
+                    kind = "url"
+                rag.ingest_text(title=title, text=doc.page_content, source=kind, openai_api_key=os.getenv("OPENAI_API_KEY"))
+                st.markdown('<div class="ok">URL ingested successfully!</div>', unsafe_allow_html=True)
+                _add_upload_record(kind, title)
+            except Exception as e:
+                st.error(f"Failed to ingest URL: {e}")
 
-    st.write("---")
-    st.subheader("Ingest YouTube transcript")
-    yt_url = st.text_input("Paste YouTube URL")
-    if st.button("Fetch Transcript & Ingest"):
-        if not yt_url.strip():
-            st.warning("Paste a YouTube URL.")
+# Text tab
+with kb_tab[2]:
+    st.markdown("#### Paste Text")
+    raw_text = st.text_area("Paste your text here...", height=180)
+    if st.button("Ingest Text", use_container_width=True):
+        if not raw_text.strip():
+            st.warning("Enter some text to ingest.")
         else:
             try:
-                doc = loaders.load_youtube_transcript(yt_url.strip())
-                n = rag.ingest_text(title=yt_url.strip(), text=doc.page_content, source="youtube", openai_api_key=OPENAI_KEY or os.environ.get("OPENAI_API_KEY"))
-                st.success(f"Ingested {n} chunks from YouTube transcript.")
-                st.write(doc.page_content[:1500] + ("..." if len(doc.page_content) > 1500 else ""))
-            except Exception as exc:
-                st.error(f"Failed to fetch transcript: {exc}")
+                rag.ingest_text(title="text", text=raw_text, source="text", openai_api_key=os.getenv("OPENAI_API_KEY"))
+                st.markdown('<div class="ok">Text ingested successfully!</div>', unsafe_allow_html=True)
+                _add_upload_record("text", "pasted text")
+            except Exception as e:
+                st.error(f"Failed to ingest text: {e}")
 
-# Resume Analyzer
-with tabs[3]:
-    st.header("Resume Analyzer")
-    uploaded_resume = st.file_uploader("Upload Resume PDF", type=["pdf"]) 
-    skills_input = st.text_area("Enter skills to check (comma-separated)", placeholder="Python, SQL, Machine Learning")
-    if st.button("Analyze Resume"):
-        if not uploaded_resume:
-            st.warning("Upload a resume PDF first.")
-        else:
-            try:
-                raw = uploaded_resume.read()
-                doc = loaders.load_pdf_bytes(raw, source=uploaded_resume.name)
-                skills = [s.strip() for s in skills_input.split(",") if s.strip()]
-                pct, details = resume_analyzer.skill_match(doc.page_content, skills)
-                st.metric("Skill match %", f"{pct:.1f}%")
-                st.json(details)
-                st.write("---")
-                summary = resume_analyzer.summarize_resume(doc.page_content, openai_api_key=OPENAI_KEY or os.environ.get("OPENAI_API_KEY"))
-                st.subheader("Resume summary")
-                st.write(summary)
-                if st.button("Ingest this resume into vector store"):
-                    n = rag.ingest_text(title=uploaded_resume.name, text=doc.page_content, source="resume", openai_api_key=OPENAI_KEY or os.environ.get("OPENAI_API_KEY"))
-                    st.success(f"Ingested {n} chunks from resume.")
-            except Exception as exc:
-                st.error(f"Resume analysis failed: {exc}")
+# API key in sidebar
+st.sidebar.markdown("---")
+sidebar_key = st.sidebar.text_input("OpenAI API Key (optional)", type="password")
+if sidebar_key:
+    os.environ["OPENAI_API_KEY"] = sidebar_key
 
-# Job Recommender
-with tabs[4]:
-    st.header("Job Role Recommendation")
-    skills_text = st.text_area("Enter skills or paste resume text", height=160)
-    num_roles = st.number_input("Max roles to recommend", min_value=1, max_value=12, value=6)
-    if st.button("Recommend Job Roles"):
-        if not skills_text.strip():
-            st.warning("Enter skills or resume text.")
-        else:
-            try:
-                recs = job_recommender.recommend(skills_text, openai_api_key=OPENAI_KEY or os.environ.get("OPENAI_API_KEY"), max_roles=num_roles)
-                st.subheader("Recommendations")
-                st.write(recs)
-            except Exception as exc:
-                st.error(f"Recommendation failed: {exc}")
+# ---------- Header with New + button ----------
+left, right = st.columns([0.9, 0.1])
+with left:
+    st.markdown("## RAG Question Answering")
+with right:
+    if st.button("New +"):
+        st.session_state.pop("user_question", None)
+        st.session_state.pop("last_answer", None)
 
-# Manage Files
-with tabs[5]:
-    st.header("Uploaded files")
-    upload_dir = Path(UPLOAD_DIR)
-    files = list(upload_dir.glob("*"))
-    if files:
-        st.write("Files saved to `data/uploads/`:")
-        for f in files:
-            st.markdown(f"- `{f.name}` ({f.stat().st_size} bytes)")
-            if st.button(f"Delete {f.name}"):
-                try:
-                    f.unlink()
-                    st.success(f"Deleted {f.name}")
-                    st.experimental_rerun()
-                except Exception as exc:
-                    st.error(f"Failed to delete: {exc}")
+# ---------- Ask box ----------
+q = st.text_area("Ask your question here", key="user_question", height=140, placeholder="What would you like to know?")
+if st.button("Get Answer", type="primary"):
+    if not q.strip():
+        st.info("Enter your question above to get started")
     else:
-        st.info("No uploaded files saved yet.")
+        try:
+            res = rag.answer_query(q, openai_api_key=os.getenv("OPENAI_API_KEY"))
+            st.session_state["last_answer"] = res
+            _add_query_record(q)
+        except Exception as e:
+            st.error(f"Retrieval failed: {e}")
+
+# Show answer/sources if present
+res = st.session_state.get("last_answer")
+if res:
+    st.markdown("### Answer")
+    st.write(res.get("answer", ""))
+    st.markdown("### Sources")
+    srcs = res.get("sources", [])
+    if srcs:
+        for s in srcs:
+            st.markdown(f"- {s}")
+    else:
+        st.write("No sources.")
+else:
+    st.write("\n")
 
 st.markdown("---")
-st.caption("LangChain RAG — embeddings + FAISS, optional OpenAI. See README for setup and notes.")
+
+# ---------- History ----------
+st.markdown("### History")
+htab1, htab2 = st.tabs(["Upload History", "Search History"])
+with htab1:
+    h = _read_history()
+    uploads = h.get("uploads", [])
+    if st.button("Clear Upload History"):
+        h["uploads"] = []
+        _write_history(h)
+        uploads = []
+    if uploads:
+        for item in uploads:
+            st.markdown(f"- {item['time']}: {item['type'].upper()} · {item['title']}")
+    else:
+        st.info("No uploads yet.")
+
+with htab2:
+    h = _read_history()
+    queries = h.get("queries", [])
+    if st.button("Clear Search History"):
+        h["queries"] = []
+        _write_history(h)
+        queries = []
+    if queries:
+        for qh in queries:
+            st.markdown(f"- {qh['time']}: {qh['question']}")
+    else:
+        st.info("No searches yet.")
+
+st.caption("Vector DB: FAISS • Chunk size 800 • Overlap 150 • Top-K 4")
