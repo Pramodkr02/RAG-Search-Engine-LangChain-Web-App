@@ -1,0 +1,49 @@
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env/
+.venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Streamlit cache
+.streamlit/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+
+# -------------------------
+# Project-specific ignores
+# -------------------------
+
+# Uploaded files (user uploads)
+data/uploads/
+
+# Vector store files
+data/vector_store.faiss
+data/metadata.json
+
+# Model cache (HuggingFace)
+cache/
+hf_cache/
+models/
+
+# Environment variables
+.env

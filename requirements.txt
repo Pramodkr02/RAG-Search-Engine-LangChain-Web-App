@@ -1,9 +1,11 @@
-streamlit
+streamlit>=1.20
+langchain>=0.0.300
+faiss-cpu
 openai
 sentence-transformers
-faiss-cpu
-PyPDF2
 beautifulsoup4
 requests
-youtube-transcript-api
 python-dotenv
+youtube-transcript-api
+PyPDF2
+tiktoken
