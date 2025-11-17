@@ -145,8 +145,13 @@ with right:
     if st.button("New", type="secondary", use_container_width=True):
         st.session_state.pop("user_question", None)
         st.session_state.pop("last_answer", None)
+        st.session_state.pop("chat_history", None)
 
 # ---------- Ask box ----------
+hstate = st.session_state.get("chat_history")
+if hstate is None:
+    st.session_state["chat_history"] = []
+
 scope_choice = st.radio("Answer scope", ["All sources", "Selected sources"], index=0)
 h = _read_history()
 uploads = h.get("uploads", [])
@@ -170,7 +175,13 @@ if st.button("Get Answer", type="primary", use_container_width=True):
     else:
         with st.spinner("Thinking..."):
             try:
-                result = rag.answer_query(question, groq_api_key=os.getenv("GROQ_API_KEY"), top_k=3, doc_ids=(selected_doc_ids if scope_choice == "Selected sources" else None))
+                result = rag.answer_query(
+                    question,
+                    groq_api_key=os.getenv("GROQ_API_KEY"),
+                    top_k=3,
+                    doc_ids=(selected_doc_ids if scope_choice == "Selected sources" else None),
+                    history=st.session_state.get("chat_history")
+                )
                 st.markdown("### Answer")
                 st.markdown(result["answer"])
                 if result["sources"]:
@@ -178,6 +189,7 @@ if st.button("Get Answer", type="primary", use_container_width=True):
                         for src in result["sources"]:
                             st.markdown(f"- {src}")
                 _add_query_record(question)
+                st.session_state["chat_history"].append({"question": question, "answer": result.get("answer", "")})
             except Exception as e:
                 st.error(f"Error getting answer: {e}")
 

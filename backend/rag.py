@@ -88,7 +88,7 @@ def _extractive_answer(query: str, docs: List[Document], max_sentences: int = 2)
     return " ".join(picked)
 
 
-def answer_query(query: str, groq_api_key: Optional[str] = None, top_k: int = DEFAULT_TOP_K, doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+def answer_query(query: str, groq_api_key: Optional[str] = None, top_k: int = DEFAULT_TOP_K, doc_ids: Optional[List[str]] = None, history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     """Answer a user query using a LangChain RetrievalQA chain with Groq LLM.
 
     Returns a dict with keys: `answer` (str) and `sources` (list).
@@ -96,6 +96,13 @@ def answer_query(query: str, groq_api_key: Optional[str] = None, top_k: int = DE
     logger = root_logger
     try:
         retriever = _get_retriever(k=top_k)
+        merged_query = query
+        if history:
+            try:
+                last_user = " ".join([h.get("question", "") for h in history[-2:]])
+                merged_query = (query + " " + last_user).strip()
+            except Exception:
+                merged_query = query
 
         if groq_api_key and ChatGroq is not None:
             try:
@@ -104,14 +111,14 @@ def answer_query(query: str, groq_api_key: Optional[str] = None, top_k: int = DE
                     template=(
                         "Use the context to answer the question concisely. "
                         "If the answer is not in the context, say you don't know.\n\n"
-                        "Context:\n{context}\n\nQuestion: {question}\n\nAnswer (1-2 sentences):"
+                        "History:\n{history}\n\nContext:\n{context}\n\nQuestion: {question}\n\nAnswer (1-2 sentences):"
                     ),
-                    input_variables=["context", "question"],
+                    input_variables=["history", "context", "question"],
                 )
                 if hasattr(retriever, 'invoke'):
-                    docs = retriever.invoke(query)
+                    docs = retriever.invoke(merged_query)
                 else:
-                    docs = retriever.get_relevant_documents(query)
+                    docs = retriever.get_relevant_documents(merged_query)
                 if doc_ids:
                     docs = [d for d in docs if (d.metadata or {}).get("doc_id") in doc_ids]
                 else:
@@ -122,7 +129,8 @@ def answer_query(query: str, groq_api_key: Optional[str] = None, top_k: int = DE
                 if not docs:
                     return {"answer": "No documents found. Ingest data first.", "sources": []}
                 context = "\n\n".join([d.page_content for d in docs[:top_k]])
-                prompt_text = prompt.format(context=context, question=query)
+                hist_text = "" if not history else "\n".join([f"Q: {h.get('question','')}\nA: {h.get('answer','')}" for h in history[-4:]])
+                prompt_text = prompt.format(history=hist_text, context=context, question=query)
                 resp = llm.invoke(prompt_text)
                 answer_text = getattr(resp, 'content', str(resp))
                 sources = []
@@ -137,9 +145,9 @@ def answer_query(query: str, groq_api_key: Optional[str] = None, top_k: int = DE
                 logger.warning("Groq LLM call failed; falling back to non-LLM retrieval: %s", e)
                 try:
                     if hasattr(retriever, 'invoke'):
-                        docs = retriever.invoke(query)
+                        docs = retriever.invoke(merged_query)
                     else:
-                        docs = retriever.get_relevant_documents(query)
+                        docs = retriever.get_relevant_documents(merged_query)
                     if doc_ids:
                         docs = [d for d in docs if (d.metadata or {}).get("doc_id") in doc_ids]
                     else:
@@ -164,9 +172,9 @@ def answer_query(query: str, groq_api_key: Optional[str] = None, top_k: int = DE
             # Fallback: perform retriever lookup and return concatenated chunks
             try:
                 if hasattr(retriever, 'invoke'):
-                    docs = retriever.invoke(query)
+                    docs = retriever.invoke(merged_query)
                 else:
-                    docs = retriever.get_relevant_documents(query)
+                    docs = retriever.get_relevant_documents(merged_query)
                 if doc_ids:
                     docs = [d for d in docs if (d.metadata or {}).get("doc_id") in doc_ids]
                 if not docs:
