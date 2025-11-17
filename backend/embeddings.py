@@ -115,7 +115,7 @@ def add_documents_to_vectorstore(docs: List[Document]):
     CURRENT_VS.add_documents(docs)
 
     try:
-        persist_vectorstore(vs, VECTOR_STORE_PATH)
+        persist_vectorstore(CURRENT_VS, VECTOR_STORE_PATH)
     except Exception:
         # best-effort persistence; do not raise for UI
         pass

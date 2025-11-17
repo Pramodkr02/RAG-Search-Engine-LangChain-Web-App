@@ -1,44 +1,37 @@
 # RAG Question Answering (Streamlit)
 
-A clean, end‑to‑end Retrieval‑Augmented Generation (RAG) web app built with Streamlit and LangChain. It matches the UI shown in the screenshots and focuses on exactly three ways to add knowledge: PDF, URL (websites or YouTube), and free Text. Includes History and a New session button.
+An end‑to‑end Retrieval‑Augmented Generation (RAG) app built with Streamlit and LangChain. Add knowledge via PDF, URL (websites or YouTube), or free Text, then ask questions and get concise answers with source citations. Includes History, a visible New button, and precise source scoping.
 
 - Vector store: FAISS (local, persisted)
-- Embeddings: OpenAI if an API key is available; otherwise automatic fallback to local Sentence‑Transformers (`all‑MiniLM‑L6‑v2`)
-- LLM answering: OpenAI Chat if available; otherwise retrieval‑only fallback (returns best matching context snippets)
+- Embeddings: Sentence‑Transformers (`all‑MiniLM‑L6‑v2`)
+- LLM answering: Groq (optional) via `GROQ_API_KEY`; otherwise concise extractive retrieval
 
 ---
 
 ## Features
-- **PDF ingestion**: Upload a PDF; text is extracted, chunked, embedded, and stored in FAISS.
-- **URL ingestion**: Provide a website URL or a YouTube link; the page text or transcript is ingested.
-- **Text ingestion**: Paste raw text and ingest it.
-- **Ask & Answer**: Large question box with a “Get Answer” button and source citations.
-- **History**: Upload and Search history with Clear buttons.
-- **New +**: Reset the current session quickly.
-
----
-
-## Screenshots
-> Replace with your actual images if needed
-- sidebar, ingest states, and history sections are aligned to the screenshots you shared.
+- PDF/URL/Text ingestion with chunking and stored embeddings
+- Concise answers with citations
+- History: upload and search logs with clear actions
+- New button: resets session state and UI
+- Answer scope: choose “All sources” or select specific uploads to avoid mixing
 
 ---
 
 ## Architecture
-- `backend/loaders.py` — PDF (PyPDF2), Web (requests + BeautifulSoup), YouTube (YouTubeTranscriptApi) → returns LangChain `Document`s
-- `backend/chunker.py` — `RecursiveCharacterTextSplitter` with configured chunk size/overlap
-- `backend/embeddings.py` — selects embeddings provider (OpenAI or Sentence‑Transformers), manages FAISS creation/persistence, robust empty‑index handling, and automatic HF fallback on OpenAI 429
-- `backend/rag.py` — ingestion helper `ingest_text(...)` and query helper `answer_query(...)` with LLM fallback to retrieval‑only
-- `app.py` — Streamlit UI (PDF/URL/Text tabs, Ask box, New +, History)
+- `backend/loaders.py` — PDF (PyPDF2), Web (requests + BeautifulSoup), YouTube (youtube‑transcript‑api) → returns LangChain `Document`s
+- `backend/chunker.py` — `RecursiveCharacterTextSplitter` (default `chunk_size=500`, `chunk_overlap=50`)
+- `backend/embeddings.py` — HuggingFace embeddings + FAISS creation/persistence with safe empty‑index handling
+- `backend/rag.py` — ingestion (`ingest_text`) tags each chunk with a unique `doc_id`; query (`answer_query`) uses MMR retrieval and returns concise answers; respects selected `doc_ids`
+- `app.py` — Streamlit UI with PDF/URL/Text tabs, Answer scope selector, Ask box, New button, History
 - `backend/config.py` — central constants (chunk sizes, paths)
 
-FAISS is persisted under `data/`. History is stored as JSON at `data/metadata.json`.
+FAISS lives at `data/vector_store.faiss`. History is stored at `data/metadata.json`.
 
 ---
 
 ## Prerequisites
-- Python 3.10+ (Windows/macOS/Linux)
-- Optional: An OpenAI API key for LLM answers or OpenAI embeddings
+- Python 3.10+
+- Optional: Groq account and `GROQ_API_KEY` for LLM answers
 
 ---
 
@@ -46,46 +39,56 @@ FAISS is persisted under `data/`. History is stored as JSON at `data/metadata.js
 ```powershell
 # 1) Create and activate venv
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+\.\.venv\Scripts\Activate.ps1
 
 # 2) Install dependencies
 pip install -r requirements.txt
 
-# 3) (Optional) Create a .env file with your OpenAI key
-#    If missing or quota is exceeded, the app automatically falls back to local embeddings/answers
+# 3) (Optional) Create a .env file with your Groq key
 New-Item -Path . -Name ".env" -ItemType "file" -Force | Out-Null
-Add-Content .env "OPENAI_API_KEY=sk-REPLACE_ME"
+Add-Content .env "GROQ_API_KEY=sk-REPLACE_ME"
 
 # 4) Run the app
 streamlit run app.py
 ```
 
-> On macOS/Linux, use `source .venv/bin/activate` to activate the venv.
+On macOS/Linux, activate with `source .venv/bin/activate`.
 
 ---
 
 ## Usage
-1. Open the app in your browser (URL printed by Streamlit).
-2. In the left sidebar under **Knowledge Base**, pick one of the tabs:
-   - **PDF**: Drag & drop a PDF → click “Ingest PDF”.
-   - **URL**: Paste a website or YouTube link → click “Ingest URL”.
-   - **Text**: Paste text → click “Ingest Text”.
-3. Ask a question in the large center box → click “Get Answer”.
-4. See the **Answer** and **Sources** below.
-5. Scroll to the **History** section to view and clear Upload/Search history.
-6. Use **New +** to reset the current session state.
+1. Open the app URL printed by Streamlit.
+2. In the sidebar, choose an ingestion method:
+   - PDF: upload and click “Ingest PDF”
+   - URL: paste website or YouTube link and click “Ingest URL”
+   - Text: paste and click “Ingest Text”
+3. Choose Answer scope above the question box:
+   - All sources: auto‑focus on the top matching upload
+   - Selected sources: pick specific uploads; answers use only those
+4. Ask your question and click “Get Answer”. View concise answer and Sources.
+5. Use the New button to reset session state.
+6. Review the History tabs to see/correct your ingest/search activity.
+
+---
+
+## Configuration
+- Defaults in `backend/config.py`:
+  - `CHUNK_SIZE=500`, `CHUNK_OVERLAP=50`
+  - `VECTOR_STORE_PATH='data/vector_store.faiss'`
+  - `METADATA_PATH='data/metadata.json'`
+  - `DEFAULT_TOP_K=4`
 
 ---
 
 ## Troubleshooting
-- **429 insufficient_quota (OpenAI)**
-  - The app automatically falls back to local Sentence‑Transformers embeddings for ingestion and to retrieval‑only answers for queries. You can also remove/leave the API key blank to force local mode.
-- **PDF ingested but no chunks**
-  - Some PDFs contain only images. Try OCR‑ed PDFs or use the URL/Text methods. The app will skip ingestion gracefully when no text is found.
-- **FAISS index errors**
-  - The app initializes an empty FAISS index safely; these should no longer occur. If you delete `data/` while the app is running, restart the app.
-- **Networking blocked for URL ingestion**
-  - Ensure the machine can reach the target website and YouTube transcript API.
+- Groq not available
+  - Leave `GROQ_API_KEY` empty; the app returns concise extractive answers from retrieved chunks.
+- YouTube transcript issues
+  - Ensure `youtube-transcript-api` is installed and the video has transcripts; the loader falls back to transcript listing when direct fetch fails.
+- No text extracted from PDF
+  - Some PDFs are image‑only. Use OCR‑ed PDFs or ingest via URL/Text.
+- FAISS index missing/corrupted
+  - The app initializes a safe empty FAISS index; if you delete `data/` during runtime, restart the app.
 
 ---
 
@@ -105,25 +108,20 @@ streamlit run app.py
 │   ├── vector_store.faiss  (created at runtime)
 │   └── metadata.json       (history)
 ├── requirements.txt
-└── .env                    (optional; OPENAI_API_KEY)
+└── .env                    (optional; GROQ_API_KEY)
 ```
 
 ---
 
 ## Tech Stack
-- Streamlit UI
+- Streamlit
 - LangChain core + community integrations
 - FAISS (faiss‑cpu) for vector search
-- OpenAI (optional) and Sentence‑Transformers via `langchain‑huggingface`
-- BeautifulSoup4, requests, PyPDF2, youtube‑transcript‑api
-
----
-
-## Development Notes
-- Style tweaks are inlined in `app.py` to match the screenshots (spacing, text sizes, success banner, etc.).
-- The code purposely avoids extra features to keep the repo clean and the UX simple.
+- Sentence‑Transformers via `langchain-huggingface`
+- Groq (optional) via `langchain-groq`
+- BeautifulSoup4, requests, PyPDF2, youtube‑transcript‑api, python‑dotenv
 
 ---
 
 ## License
-Choose a license (e.g., MIT) and add it here.
+Add a license (e.g., MIT) if you plan to distribute.

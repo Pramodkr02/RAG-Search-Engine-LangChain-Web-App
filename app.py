@@ -28,10 +28,11 @@ st.set_page_config(page_title="RAG Question Answering", layout="wide")
 st.markdown(
     """
     <style>
-      .block-container{padding-top:1rem;}
+      .block-container{padding-top:2.5rem;}
       .stTextArea textarea{font-size:1.05rem;}
       .hint{color:#c8c8c8;font-size:0.92rem;}
       .ok{background:#16321f;color:#b9f5d0;padding:10px 12px;border-radius:6px;}
+      .stButton > button { z-index: 10; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -54,9 +55,9 @@ def _write_history(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def _add_upload_record(kind: str, title: str):
+def _add_upload_record(kind: str, title: str, doc_id: str):
     h = _read_history()
-    h["uploads"].insert(0, {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "type": kind, "title": title})
+    h["uploads"].insert(0, {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "type": kind, "title": title, "doc_id": doc_id})
     _write_history(h)
 
 
@@ -78,9 +79,10 @@ with kb_tab[0]:
         if st.button("Ingest PDF", use_container_width=True):
             try:
                 doc = loaders.load_pdf_bytes(pdf.read(), source=pdf.name)
-                chunks = rag.ingest_text(title=pdf.name, text=doc.page_content, source="pdf")
+                did = f"pdf:{pdf.name}"
+                chunks = rag.ingest_text(title=pdf.name, text=doc.page_content, source="pdf", doc_id=did)
                 st.markdown('<div class="ok">PDF ingested successfully!</div>', unsafe_allow_html=True)
-                _add_upload_record("pdf", pdf.name)
+                _add_upload_record("pdf", pdf.name, did)
             except Exception as e:
                 st.error(f"Failed to ingest PDF: {e}")
     st.caption("Limit 200MB per file • PDF")
@@ -104,9 +106,10 @@ with kb_tab[1]:
                     kind = "webpage"
                 
                 # Ingest the content
-                chunks = rag.ingest_text(title=title, text=doc.page_content, source=kind)
+                did = f"{kind}:{url}"
+                chunks = rag.ingest_text(title=title, text=doc.page_content, source=kind, doc_id=did)
                 st.markdown(f'<div class="ok">URL ingested successfully! ({chunks} chunks)</div>', unsafe_allow_html=True)
-                _add_upload_record(kind, title)
+                _add_upload_record(kind, title, did)
                 
             except Exception as e:
                 st.error(f"Failed to ingest URL: {e}")
@@ -121,9 +124,10 @@ with kb_tab[2]:
             st.warning("Enter some text to ingest.")
         else:
             try:
-                rag.ingest_text(title="text", text=raw_text, source="text")
+                did = f"text:{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                rag.ingest_text(title="text", text=raw_text, source="text", doc_id=did)
                 st.markdown('<div class="ok">Text ingested successfully!</div>', unsafe_allow_html=True)
-                _add_upload_record("text", "pasted text")
+                _add_upload_record("text", "pasted text", did)
             except Exception as e:
                 st.error(f"Failed to ingest text: {e}")
 
@@ -134,15 +138,25 @@ with st.sidebar.expander("API Settings"):
         os.environ["GROQ_API_KEY"] = groq_key
 
 # ---------- Header with New + button ----------
-left, right = st.columns([0.9, 0.1])
+left, right = st.columns([0.8, 0.2])
 with left:
     st.markdown("## RAG Question Answering")
 with right:
-    if st.button("New +"):
+    if st.button("New", type="secondary", use_container_width=True):
         st.session_state.pop("user_question", None)
         st.session_state.pop("last_answer", None)
 
 # ---------- Ask box ----------
+scope_choice = st.radio("Answer scope", ["All sources", "Selected sources"], index=0)
+h = _read_history()
+uploads = h.get("uploads", [])
+options = [f"{u['type'].upper()} · {u['title']}" for u in uploads]
+id_map = {f"{u['type'].upper()} · {u['title']}": u.get('doc_id') for u in uploads}
+selected_labels = []
+if scope_choice == "Selected sources":
+    selected_labels = st.multiselect("Choose sources", options, help="Answers will use only selected sources")
+selected_doc_ids = [id_map[l] for l in selected_labels]
+
 question = st.text_area(
     "Ask a question about the documents in your knowledge base:",
     placeholder="Type your question here...",
@@ -156,7 +170,7 @@ if st.button("Get Answer", type="primary", use_container_width=True):
     else:
         with st.spinner("Thinking..."):
             try:
-                result = rag.answer_query(question, groq_api_key=os.getenv("GROQ_API_KEY"), top_k=3)
+                result = rag.answer_query(question, groq_api_key=os.getenv("GROQ_API_KEY"), top_k=3, doc_ids=(selected_doc_ids if scope_choice == "Selected sources" else None))
                 st.markdown("### Answer")
                 st.markdown(result["answer"])
                 if result["sources"]:
@@ -213,4 +227,4 @@ with htab2:
     else:
         st.info("No searches yet.")
 
-st.caption("Vector DB: FAISS • Chunk size 800 • Overlap 150 • Top-K 4")
+st.caption("Vector DB: FAISS • Chunk size 500 • Overlap 50 • Top-K 4")

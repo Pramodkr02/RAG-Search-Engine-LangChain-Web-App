@@ -9,7 +9,10 @@ import re
 import io
 import requests
 from bs4 import BeautifulSoup
-from youtube_transcript_api import YouTubeTranscriptApi
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi
+except Exception:
+    YouTubeTranscriptApi = None
 from PyPDF2 import PdfReader
 
 from langchain_core.documents import Document
@@ -106,9 +109,14 @@ def load_youtube_transcript(url: str) -> Document:
     m = re.search(r"(?:v=|/)([0-9A-Za-z_-]{11})", url)
     if not m:
         raise ValueError("Invalid YouTube URL")
-    video_id = m.group(1)
-    transcript = YouTubeTranscriptApi.get_transcript(video_id)
-    text = " ".join([t["text"] for t in transcript])
+    vid = m.group(1)
+    if YouTubeTranscriptApi is None:
+        raise Exception("YouTubeTranscriptApi is not available")
+    try:
+        tr = YouTubeTranscriptApi.get_transcript(vid)
+    except Exception:
+        tr = YouTubeTranscriptApi.list_transcripts(vid).find_transcript(['en']).fetch()
+    text = " ".join([t.get("text", "") for t in tr])
     return Document(page_content=text, metadata={"source": url, "type": "youtube"})
 
 
