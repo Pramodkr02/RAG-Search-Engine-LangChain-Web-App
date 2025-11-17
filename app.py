@@ -33,6 +33,7 @@ st.markdown(
       .hint{color:#c8c8c8;font-size:0.92rem;}
       .ok{background:#16321f;color:#b9f5d0;padding:10px 12px;border-radius:6px;}
       .stButton > button { z-index: 10; }
+      .sidebar-new-btn { margin-top: 0.5rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -137,29 +138,39 @@ with st.sidebar.expander("API Settings"):
     if groq_key:
         os.environ["GROQ_API_KEY"] = groq_key
 
+# Always-accessible New Chat in sidebar for better UX
+if st.sidebar.button("New Chat", type="secondary"):
+    st.session_state["user_question"] = ""
+    st.session_state["last_answer"] = None
+    st.session_state["chat_history"] = []
+    st.session_state["selected_sources"] = []
+    st.session_state["scope_choice"] = "All sources"
+
 # ---------- Header with New + button ----------
 left, right = st.columns([0.8, 0.2])
 with left:
     st.markdown("## RAG Question Answering")
 with right:
     if st.button("New", type="secondary", use_container_width=True):
-        st.session_state.pop("user_question", None)
-        st.session_state.pop("last_answer", None)
-        st.session_state.pop("chat_history", None)
+        st.session_state["user_question"] = ""
+        st.session_state["last_answer"] = None
+        st.session_state["chat_history"] = []
+        st.session_state["selected_sources"] = []
+        st.session_state["scope_choice"] = "All sources"
 
 # ---------- Ask box ----------
 hstate = st.session_state.get("chat_history")
 if hstate is None:
     st.session_state["chat_history"] = []
 
-scope_choice = st.radio("Answer scope", ["All sources", "Selected sources"], index=0)
+scope_choice = st.radio("Answer scope", ["All sources", "Selected sources"], index=0, key="scope_choice")
 h = _read_history()
 uploads = h.get("uploads", [])
 options = [f"{u['type'].upper()} · {u['title']}" for u in uploads]
 id_map = {f"{u['type'].upper()} · {u['title']}": u.get('doc_id') for u in uploads}
 selected_labels = []
 if scope_choice == "Selected sources":
-    selected_labels = st.multiselect("Choose sources", options, help="Answers will use only selected sources")
+    selected_labels = st.multiselect("Choose sources", options, help="Answers will use only selected sources", key="selected_sources")
 selected_doc_ids = [id_map[l] for l in selected_labels]
 
 question = st.text_area(
@@ -167,6 +178,7 @@ question = st.text_area(
     placeholder="Type your question here...",
     label_visibility="collapsed",
     height=100,
+    key="user_question",
 )
 
 if st.button("Get Answer", type="primary", use_container_width=True):
@@ -190,6 +202,7 @@ if st.button("Get Answer", type="primary", use_container_width=True):
                             st.markdown(f"- {src}")
                 _add_query_record(question)
                 st.session_state["chat_history"].append({"question": question, "answer": result.get("answer", "")})
+                st.session_state["last_answer"] = result
             except Exception as e:
                 st.error(f"Error getting answer: {e}")
 

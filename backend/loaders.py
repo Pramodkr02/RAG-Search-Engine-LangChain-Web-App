@@ -18,6 +18,44 @@ from PyPDF2 import PdfReader
 from langchain_core.documents import Document
 
 
+def _extract_main_text(soup: BeautifulSoup) -> str:
+    for tag in soup(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+    for tag in soup(["header", "footer", "nav", "aside", "form", "iframe"]):
+        tag.decompose()
+    candidates = []
+    for el in soup.find_all(["article", "main"]):
+        txt = el.get_text("\n", strip=True)
+        ps = len(el.find_all("p"))
+        candidates.append((len(txt) + ps * 200, txt))
+    if not candidates:
+        for el in soup.find_all("div"):
+            ps = el.find_all("p")
+            if len(ps) >= 3:
+                txt = el.get_text("\n", strip=True)
+                candidates.append((len(txt) + len(ps) * 200, txt))
+    text = ""
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        text = candidates[0][1]
+    else:
+        text = soup.get_text("\n", strip=True)
+    lines = [l.strip() for l in text.split("\n")]
+    blacklist = {"home", "search", "login", "signup", "related articles", "copyright", "terms", "privacy"}
+    filtered = []
+    for l in lines:
+        ll = l.lower()
+        if any(b in ll for b in blacklist):
+            continue
+        if len(l) < 25:
+            continue
+        filtered.append(l)
+    out = "\n".join(filtered) if filtered else text
+    if len(out) > 12000:
+        out = out[:12000]
+    return out
+
+
 def load_webpage(url: str) -> Document:
     """Fetch a webpage and return a LangChain Document with the page text.
 
@@ -34,24 +72,11 @@ def load_webpage(url: str) -> Document:
         response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Remove script and style elements
-        for script in soup(["script", "style"]):
-            script.decompose()
-            
-        # Get text
-        text = soup.get_text(separator='\n', strip=True)
-        
-        # Clean up multiple newlines
-        text = '\n'.join([line for line in text.split('\n') if line.strip()])
+        text = _extract_main_text(soup)
         
         return Document(
             page_content=text,
-            metadata={
-                "source": url,
-                "title": soup.title.string if soup.title else "Webpage",
-                "type": "webpage"
-            }
+            metadata={"source": url, "title": soup.title.string if soup.title else "Webpage", "type": "webpage"}
         )
     except Exception as e:
         raise Exception(f"Failed to load webpage {url}: {str(e)}")
