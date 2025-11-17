@@ -6,7 +6,7 @@ Features (exactly as requested):
 - Top-right: New + button to reset session
 - History section: upload and query history with clear buttons
 
-Back end uses FAISS vector store via LangChain. API key is read from .env (OPENAI_API_KEY) or sidebar.
+Back end uses FAISS vector store via LangChain with Groq LLM.
 """
 import os
 import json
@@ -21,8 +21,8 @@ from backend.logger import root_logger
 
 # ---------- Bootstrap ----------
 load_dotenv(override=True)
-if os.getenv("OPENAI_API_KEY"):
-    os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")  # ensure for langchain-openai
+if os.getenv("GROQ_API_KEY"):
+    os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")  # ensure for langchain-groq
 
 st.set_page_config(page_title="RAG Question Answering", layout="wide")
 st.markdown(
@@ -78,7 +78,7 @@ with kb_tab[0]:
         if st.button("Ingest PDF", use_container_width=True):
             try:
                 doc = loaders.load_pdf_bytes(pdf.read(), source=pdf.name)
-                chunks = rag.ingest_text(title=pdf.name, text=doc.page_content, source="pdf", openai_api_key=os.getenv("OPENAI_API_KEY"))
+                chunks = rag.ingest_text(title=pdf.name, text=doc.page_content, source="pdf")
                 st.markdown('<div class="ok">PDF ingested successfully!</div>', unsafe_allow_html=True)
                 _add_upload_record("pdf", pdf.name)
             except Exception as e:
@@ -99,14 +99,18 @@ with kb_tab[1]:
                     title = "YouTube"
                     kind = "youtube"
                 else:
-                    doc = loaders.load_url_to_document(url)
-                    title = url
-                    kind = "url"
-                rag.ingest_text(title=title, text=doc.page_content, source=kind, openai_api_key=os.getenv("OPENAI_API_KEY"))
-                st.markdown('<div class="ok">URL ingested successfully!</div>', unsafe_allow_html=True)
+                    doc = loaders.load_webpage(url)
+                    title = doc.metadata.get("title", url)
+                    kind = "webpage"
+                
+                # Ingest the content
+                chunks = rag.ingest_text(title=title, text=doc.page_content, source=kind)
+                st.markdown(f'<div class="ok">URL ingested successfully! ({chunks} chunks)</div>', unsafe_allow_html=True)
                 _add_upload_record(kind, title)
+                
             except Exception as e:
                 st.error(f"Failed to ingest URL: {e}")
+    st.caption("Supports most webpages and YouTube videos")
 
 # Text tab
 with kb_tab[2]:
@@ -117,17 +121,17 @@ with kb_tab[2]:
             st.warning("Enter some text to ingest.")
         else:
             try:
-                rag.ingest_text(title="text", text=raw_text, source="text", openai_api_key=os.getenv("OPENAI_API_KEY"))
+                rag.ingest_text(title="text", text=raw_text, source="text")
                 st.markdown('<div class="ok">Text ingested successfully!</div>', unsafe_allow_html=True)
                 _add_upload_record("text", "pasted text")
             except Exception as e:
                 st.error(f"Failed to ingest text: {e}")
 
-# API key in sidebar
-st.sidebar.markdown("---")
-sidebar_key = st.sidebar.text_input("OpenAI API Key (optional)", type="password")
-if sidebar_key:
-    os.environ["OPENAI_API_KEY"] = sidebar_key
+# API Key
+with st.sidebar.expander("API Settings"):
+    groq_key = st.text_input("Groq API Key", type="password", value=os.getenv("GROQ_API_KEY", ""))
+    if groq_key:
+        os.environ["GROQ_API_KEY"] = groq_key
 
 # ---------- Header with New + button ----------
 left, right = st.columns([0.9, 0.1])
@@ -139,17 +143,29 @@ with right:
         st.session_state.pop("last_answer", None)
 
 # ---------- Ask box ----------
-q = st.text_area("Ask your question here", key="user_question", height=140, placeholder="What would you like to know?")
-if st.button("Get Answer", type="primary"):
-    if not q.strip():
-        st.info("Enter your question above to get started")
+question = st.text_area(
+    "Ask a question about the documents in your knowledge base:",
+    placeholder="Type your question here...",
+    label_visibility="collapsed",
+    height=100,
+)
+
+if st.button("Get Answer", type="primary", use_container_width=True):
+    if not question.strip():
+        st.warning("Please enter a question.")
     else:
-        try:
-            res = rag.answer_query(q, openai_api_key=os.getenv("OPENAI_API_KEY"))
-            st.session_state["last_answer"] = res
-            _add_query_record(q)
-        except Exception as e:
-            st.error(f"Retrieval failed: {e}")
+        with st.spinner("Thinking..."):
+            try:
+                result = rag.answer_query(question, groq_api_key=os.getenv("GROQ_API_KEY"), top_k=3)
+                st.markdown("### Answer")
+                st.markdown(result["answer"])
+                if result["sources"]:
+                    with st.expander("Sources"):
+                        for src in result["sources"]:
+                            st.markdown(f"- {src}")
+                _add_query_record(question)
+            except Exception as e:
+                st.error(f"Error getting answer: {e}")
 
 # Show answer/sources if present
 res = st.session_state.get("last_answer")

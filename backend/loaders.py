@@ -15,6 +15,48 @@ from PyPDF2 import PdfReader
 from langchain_core.documents import Document
 
 
+def load_webpage(url: str) -> Document:
+    """Fetch a webpage and return a LangChain Document with the page text.
+
+    Args:
+        url: The webpage URL to fetch.
+
+    Returns:
+        Document containing scraped text and metadata.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.decompose()
+            
+        # Get text
+        text = soup.get_text(separator='\n', strip=True)
+        
+        # Clean up multiple newlines
+        text = '\n'.join([line for line in text.split('\n') if line.strip()])
+        
+        return Document(
+            page_content=text,
+            metadata={
+                "source": url,
+                "title": soup.title.string if soup.title else "Webpage",
+                "type": "webpage"
+            }
+        )
+    except Exception as e:
+        raise Exception(f"Failed to load webpage {url}: {str(e)}")
+
+# Update the __all__ list at the top of the file if it exists, or add it
+__all__ = ['load_pdf_bytes', 'load_url_to_document', 'load_webpage', 'load_youtube_transcript', 'document_from_text']
+
+
 def load_pdf_bytes(pdf_bytes: bytes, source: str = "pdf") -> Document:
     """Extract text from PDF bytes and return a LangChain Document.
 

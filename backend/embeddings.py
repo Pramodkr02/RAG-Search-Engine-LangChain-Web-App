@@ -1,15 +1,13 @@
 """Embeddings and FAISS vectorstore utilities using LangChain.
 
 This module provides helper functions to create or load a FAISS
-vectorstore that is compatible with LangChain workflows. It supports
-either OpenAI embeddings (if `OPENAI_API_KEY` is configured) or
+vectorstore that is compatible with LangChain workflows using
 Sentence-Transformers via `HuggingFaceEmbeddings`.
 """
 from typing import List, Optional, Tuple
 import os
 
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.docstore import InMemoryDocstore
 from langchain_core.documents import Document
@@ -20,16 +18,9 @@ from backend.config import EMBEDDING_MODEL_NAME, VECTOR_STORE_PATH
 from backend.utils import ensure_dir
 
 
-def get_embedding_model(openai_api_key: Optional[str] = None):
-    """Return an embeddings object. Prefer OpenAI if key provided,
-    otherwise use HuggingFace embeddings.
-
-    Args:
-        openai_api_key: Optional OpenAI API key.
+def get_embedding_model():
+    """Return a HuggingFace embeddings object.
     """
-    if openai_api_key:
-        return OpenAIEmbeddings()
-    # fallback to sentence-transformers (HuggingFace)
     return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
 
 
@@ -85,16 +76,15 @@ def _empty_faiss(emb) -> FAISS:
     return FAISS(embedding_function=emb, index=index, docstore=InMemoryDocstore({}), index_to_docstore_id={})
 
 
-def get_or_create_vectorstore(docs: Optional[List[Document]] = None, openai_api_key: Optional[str] = None) -> FAISS:
+def get_or_create_vectorstore(docs: Optional[List[Document]] = None) -> FAISS:
     """Return a FAISS vectorstore. Load from disk if possible, otherwise
     create from `docs`.
 
     Args:
         docs: Optional list of Documents to initialize the store with.
-        openai_api_key: Optional OpenAI key used to pick embedding model.
     """
     global CURRENT_VS
-    emb = get_embedding_model(openai_api_key)
+    emb = get_embedding_model()
     if CURRENT_VS is None:
         # attempt load from disk
         try:
@@ -112,31 +102,17 @@ def get_or_create_vectorstore(docs: Optional[List[Document]] = None, openai_api_
     return CURRENT_VS
 
 
-def add_documents_to_vectorstore(docs: List[Document], openai_api_key: Optional[str] = None) -> None:
+def add_documents_to_vectorstore(docs: List[Document]):
     """Add documents to the global vectorstore.
-
-    If OpenAI embeddings fail due to quota (429) or similar, fall back
-    automatically to HuggingFace embeddings to guarantee ingestion.
     """
     global CURRENT_VS
-    texts = [d.page_content for d in docs]
-    metadatas = [d.metadata or {} for d in docs]
+    if not docs:
+        return
 
-    # Try with the requested embedding provider first
-    vs = get_or_create_vectorstore(docs=None, openai_api_key=openai_api_key)
-    try:
-        vs.add_texts(texts, metadatas=metadatas)
-    except Exception as e:
-        msg = str(e).lower()
-        quota_issue = ("insufficient_quota" in msg) or ("error code: 429" in msg) or ("rate limit" in msg)
-        if openai_api_key and quota_issue:
-            # Switch to HF embeddings: reset CURRENT_VS with an empty HF index
-            emb_hf = get_embedding_model(openai_api_key=None)
-            CURRENT_VS = _empty_faiss(emb_hf)
-            vs = CURRENT_VS
-            vs.add_texts(texts, metadatas=metadatas)
-        else:
-            raise
+    emb = get_embedding_model()
+    if CURRENT_VS is None:
+        CURRENT_VS = _empty_faiss(emb)
+    CURRENT_VS.add_documents(docs)
 
     try:
         persist_vectorstore(vs, VECTOR_STORE_PATH)
