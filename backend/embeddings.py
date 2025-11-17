@@ -11,7 +11,10 @@ import os
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain_community.docstore import InMemoryDocstore
 from langchain_core.documents import Document
+
+import faiss  # faiss-cpu
 
 from backend.config import EMBEDDING_MODEL_NAME, VECTOR_STORE_PATH
 from backend.utils import ensure_dir
@@ -71,6 +74,17 @@ def persist_vectorstore(vs: FAISS, path: str) -> None:
 CURRENT_VS: Optional[FAISS] = None
 
 
+def _empty_faiss(emb) -> FAISS:
+    """Create an empty FAISS vector store safely.
+
+    We cannot call FAISS.from_texts([]) because it raises an index error.
+    Instead, build an IndexFlatL2 using the embedding dimensionality.
+    """
+    dim = len(emb.embed_query(""))  # get embedding dimension
+    index = faiss.IndexFlatL2(dim)
+    return FAISS(embedding_function=emb, index=index, docstore=InMemoryDocstore({}), index_to_docstore_id={})
+
+
 def get_or_create_vectorstore(docs: Optional[List[Document]] = None, openai_api_key: Optional[str] = None) -> FAISS:
     """Return a FAISS vectorstore. Load from disk if possible, otherwise
     create from `docs`.
@@ -92,8 +106,7 @@ def get_or_create_vectorstore(docs: Optional[List[Document]] = None, openai_api_
 
     if CURRENT_VS is None:
         if not docs:
-            # start empty index by creating from an empty list
-            CURRENT_VS = FAISS.from_texts([], emb)
+            CURRENT_VS = _empty_faiss(emb)
         else:
             CURRENT_VS = create_faiss_from_documents(docs, emb)
     return CURRENT_VS
@@ -102,13 +115,29 @@ def get_or_create_vectorstore(docs: Optional[List[Document]] = None, openai_api_
 def add_documents_to_vectorstore(docs: List[Document], openai_api_key: Optional[str] = None) -> None:
     """Add documents to the global vectorstore.
 
-    Args:
-        docs: Documents to add.
+    If OpenAI embeddings fail due to quota (429) or similar, fall back
+    automatically to HuggingFace embeddings to guarantee ingestion.
     """
-    vs = get_or_create_vectorstore(docs=None, openai_api_key=openai_api_key)
+    global CURRENT_VS
     texts = [d.page_content for d in docs]
     metadatas = [d.metadata or {} for d in docs]
-    vs.add_texts(texts, metadatas=metadatas)
+
+    # Try with the requested embedding provider first
+    vs = get_or_create_vectorstore(docs=None, openai_api_key=openai_api_key)
+    try:
+        vs.add_texts(texts, metadatas=metadatas)
+    except Exception as e:
+        msg = str(e).lower()
+        quota_issue = ("insufficient_quota" in msg) or ("error code: 429" in msg) or ("rate limit" in msg)
+        if openai_api_key and quota_issue:
+            # Switch to HF embeddings: reset CURRENT_VS with an empty HF index
+            emb_hf = get_embedding_model(openai_api_key=None)
+            CURRENT_VS = _empty_faiss(emb_hf)
+            vs = CURRENT_VS
+            vs.add_texts(texts, metadatas=metadatas)
+        else:
+            raise
+
     try:
         persist_vectorstore(vs, VECTOR_STORE_PATH)
     except Exception:

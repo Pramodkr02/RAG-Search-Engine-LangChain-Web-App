@@ -33,6 +33,9 @@ def ingest_text(title: str, text: str, source: str = "text", openai_api_key: Opt
     logger = root_logger
     try:
         chunks = split_text(text)
+        if not chunks:
+            logger.warning("No content extracted for %s; skipping ingestion.", title)
+            return 0
         docs: List[Document] = []
         for i, c in enumerate(chunks):
             docs.append(Document(page_content=c, metadata={"title": title, "source": source, "chunk": i}))
@@ -59,18 +62,33 @@ def answer_query(query: str, openai_api_key: Optional[str] = None, top_k: int = 
         retriever = _get_retriever(openai_api_key=openai_api_key, k=top_k)
 
         if openai_api_key:
-            llm = ChatOpenAI(temperature=0.0)
-            qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
-            resp = qa.run(query)
-            # When using RetrievalQA.run we lose the individual docs; re-run a retrieve
-            docs: List[Document] = retriever.get_relevant_documents(query)
-            sources = []
-            for d in docs:
-                md = d.metadata or {}
-                title = md.get("title") or md.get("source") or "unknown"
-                chunk = md.get("chunk")
-                sources.append(f"Source: {title} (chunk {chunk})")
-            return {"answer": resp, "sources": sources}
+            try:
+                llm = ChatOpenAI(temperature=0.0)
+                qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
+                resp = qa.run(query)
+                # When using RetrievalQA.run we lose the individual docs; re-run a retrieve
+                docs: List[Document] = retriever.get_relevant_documents(query)
+                sources = []
+                for d in docs:
+                    md = d.metadata or {}
+                    title = md.get("title") or md.get("source") or "unknown"
+                    chunk = md.get("chunk")
+                    sources.append(f"Source: {title} (chunk {chunk})")
+                return {"answer": resp, "sources": sources}
+            except Exception as e:
+                # Fallback if OpenAI LLM fails (e.g., 429 insufficient_quota)
+                logger.warning("LLM call failed; falling back to non-LLM retrieval: %s", e)
+                docs: List[Document] = retriever.get_relevant_documents(query)
+                if not docs:
+                    return {"answer": "No documents found. Ingest data first.", "sources": []}
+                concat = "\n\n".join([d.page_content for d in docs[:top_k]])
+                sources = []
+                for d in docs[:top_k]:
+                    md = d.metadata or {}
+                    title = md.get("title") or md.get("source") or "unknown"
+                    chunk = md.get("chunk")
+                    sources.append(f"Source: {title} (chunk {chunk})")
+                return {"answer": concat, "sources": sources}
         else:
             # Fallback: perform retriever lookup and return concatenated chunks
             docs: List[Document] = retriever.get_relevant_documents(query)
